@@ -1,0 +1,90 @@
+name: Container Security — Integrador Parte 1
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/lab-security
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+jobs:
+  build-scan-sign:
+    runs-on: ubuntu-latest
+    steps:
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t $IMAGE_NAME:${{ github.sha }} .
+
+      - name: Dockle — CIS Docker Benchmark
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            goodwithtech/dockle:latest \
+            --exit-code 1 \
+            --exit-level fatal \
+            $IMAGE_NAME:${{ github.sha }}
+
+      - name: Trivy — Secret Scanning
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          scanners: secret
+          exit-code: '1'
+
+      - name: Trivy — CVE Scan CRITICAL
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          scanners: vuln
+          severity: CRITICAL
+          exit-code: '1'
+          vuln-type: os,library
+
+      - name: Trivy — Gerar SBOM CycloneDX
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          format: cyclonedx
+          output: sbom.cyclonedx.json
+          exit-code: '0'
+
+      - name: Upload SBOM como artefato
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: sbom.cyclonedx.json
+
+      - name: Login no GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push imagem
+        run: docker push $IMAGE_NAME:${{ github.sha }}
+
+      - name: Instalar Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Capturar digest da imagem
+        id: digest
+        run: |
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' \
+            $IMAGE_NAME:${{ github.sha }} | sed 's/.*@//')
+          echo "value=$DIGEST" >> $GITHUB_OUTPUT
+
+      - name: Cosign — Assinar imagem keyless OIDC
+        run: |
+          cosign sign --yes \
+            $IMAGE_NAME@${{ steps.digest.outputs.value }}
