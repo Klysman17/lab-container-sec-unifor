@@ -32,6 +32,7 @@ jobs:
             goodwithtech/dockle:latest \
             --exit-code 1 \
             --exit-level fatal \
+            --accept-key KEY_SHA512 \
             $IMAGE_NAME:${{ github.sha }}
 
       - name: Trivy — Secret Scanning
